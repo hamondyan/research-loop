@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# SessionStart hook for research-loop plugin: 轻探测 .research/ 状态
+
+set -euo pipefail
+
+# 判断是否在 git 仓库
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    exit 0
+fi
+
+# 获取仓库根目录
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+if [[ -z "$repo_root" ]]; then
+    exit 0
+fi
+
+# 检查 .research/DASHBOARD.md
+dashboard="${repo_root}/.research/DASHBOARD.md"
+if [[ ! -f "$dashboard" ]]; then
+    exit 0
+fi
+
+# 从整个文件提取关键信息行
+# canonical DASHBOARD 格式: 标题 + 空行 + **IDEA** + **Active**, 字段不在前 3 行,
+# 必须 grep 整个文件而非 head -n 3.
+idea_line=$(grep -m1 '^\*\*IDEA\*\*:' "$dashboard" || true)
+active_line=$(grep -m1 '^\*\*Active\*\*:' "$dashboard" || true)
+
+idea="${idea_line#\*\*IDEA\*\*: }"
+active_info="$active_line"
+
+# 验证必要字段
+if [[ -z "$idea" || -z "$active_info" ]]; then
+    exit 0
+fi
+
+# 获取当前分支
+branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+if [[ -z "$branch" || "$branch" == "HEAD" ]]; then
+    # 新仓库或 detached HEAD，跳过
+    exit 0
+fi
+
+# 构造注入内容
+inject_text="📊 Research loop active on branch \`${branch}\`: ${idea}"
+active_summary="${active_info#\*\*Active\*\*: }"
+# 剥离残留的 markdown 加粗标记(如 **Last**), 避免注入原始 markdown
+active_summary="${active_summary//\*\*/}"
+if [[ -n "$active_summary" ]]; then
+    inject_text="${inject_text} | ${active_summary}"
+fi
+
+# JSON escape: 转义反斜杠, 双引号和换行
+escaped_text="${inject_text//\\/\\\\}"
+escaped_text="${escaped_text//\"/\\\"}"
+escaped_text="${escaped_text//$'\n'/\\n}"
+
+# 输出 Claude Code hookSpecificOutput 格式
+# Schema: hookSpecificOutput.{hookEventName, additionalContext}
+# 与 superpowers session-start hook 保持一致
+cat <<EOF
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "${escaped_text}"
+  }
+}
+EOF

@@ -1,0 +1,7 @@
+# 开发临时文件
+*.pyc
+__pycache__/
+.DS_Store
+
+# 测试产物
+tests/fixtures/.research/
