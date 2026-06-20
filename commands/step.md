@@ -200,24 +200,24 @@ Codebase 约束: {codebase_constraints}
 Designer 设计: {designer_json}    # designer 返回的完整 JSON
 
 要求:
-1. 从 4 个维度独立审查:
-   - **Discriminative Power**: 实验能否明确区分假设成立/不成立
-   - **Feasibility**: 资源/时间预算是否合理, commands 是否可执行
-   - **Alignment**: 实验设计是否对齐假设原意, 无偏移或过度简化
-   - **Clarity**: judge_criteria 是否可操作, 避免模糊表述
+1. 从 4 个维度独立审查(维度名与 agents/critic.md 契约一致):
+   - **discriminability**: 实验能否明确区分假设成立/不成立, 有无 baseline/对照组
+   - **variable_count**: 变量 ≤ 3; 若多变量需说明是否存在交互效应解释困难
+   - **judge_criteria**: 是否可操作, 含具体阈值或统计检验, 避免模糊表述
+   - **commands**: 路径是否完整、参数是否齐全、资源预算是否与实验规模匹配
 2. 每个维度返回机器判决: PASS / WARN / FAIL
 3. FAIL 必须给出具体修正方向, WARN 给出改进建议
-4. 返回结构化 JSON:
+4. 返回结构化 JSON(schema 与 agents/critic.md 一致, dimensions 为对象):
    {{
-       "dimensions": [
-           {{
-               "name": "Discriminative Power",
-               "verdict": "PASS|WARN|FAIL",
-               "reasoning": "判定依据, 2-3 句话",
-               "suggestions": "修正方向或改进建议, FAIL 必填, WARN 选填"
-           }},
-           // ... 其他 3 个维度
-       ]
+       "verdict": "PASS|WARN|FAIL",
+       "dimensions": {{
+           "discriminability": {{"verdict": "PASS|WARN|FAIL", "reason": "..."}},
+           "variable_count":   {{"verdict": "PASS|WARN|FAIL", "reason": "..."}},
+           "judge_criteria":   {{"verdict": "PASS|WARN|FAIL", "reason": "..."}},
+           "commands":         {{"verdict": "PASS|WARN|FAIL", "reason": "..."}}
+       }},
+       "reasoning": "整体评判 2-3 句, 引用具体字段值",
+       "suggested_revisions": ["修订建议 1", "修订建议 2"]
    }}
 
 返回 JSON 即可, 无需其他输出.
@@ -228,8 +228,8 @@ Designer 设计: {designer_json}    # designer 返回的完整 JSON
 )
 ```
 
-**判决聚合机制**(机器 verdict):
-- 统计 4 个维度的 verdict: `fail_count`, `warn_count`, `pass_count`
+**判决聚合机制**(机器 verdict, 不信任 critic 自己写的 top-level verdict 字段):
+- 遍历 dimensions 对象的 4 个 key(discriminability/variable_count/judge_criteria/commands), 统计各维度 verdict: `fail_count`, `warn_count`, `pass_count`
 - 聚合规则:
   - `fail_count > 0` → 最终判决 **FAIL**
   - `fail_count == 0 且 warn_count > 0` → 最终判决 **WARN**
@@ -397,14 +397,14 @@ append_to_journal({
 **Final Verdict**: [PASS / WARN / FAIL]
 
 **Dimensions**:
-- **Discriminative Power**: [verdict] — [reasoning]
-  [若有 suggestions: "→ 修正方向: [suggestions]"]
-- **Feasibility**: [verdict] — [reasoning]
-  [若有 suggestions: "→ 修正方向: [suggestions]"]
-- **Alignment**: [verdict] — [reasoning]
-  [若有 suggestions: "→ 修正方向: [suggestions]"]
-- **Clarity**: [verdict] — [reasoning]
-  [若有 suggestions: "→ 修正方向: [suggestions]"]
+- **discriminability**: [verdict] — [reason]
+- **variable_count**: [verdict] — [reason]
+- **judge_criteria**: [verdict] — [reason]
+- **commands**: [verdict] — [reason]
+
+**Reasoning**: [reasoning]
+**Suggested revisions**:
+[逐条列出 suggested_revisions]
 
 [若进入 Round 2, 追加以下章节]
 
