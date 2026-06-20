@@ -182,15 +182,15 @@ Children: H1.1
 ```bash
 # Simulate a new Claude Code session in the same repo.
 # The SessionStart hook (hooks/session-start) should detect
-# .research/DASHBOARD.md and inject a research-context section.
+# .research/DASHBOARD.md and inject research context.
 
 # Manually invoke the hook to verify its output:
 "${CLAUDE_PLUGIN_ROOT}/hooks/session-start"
 ```
 
 **Expected Output:**
-- Emits JSON with `hookSpecificOutput.systemPromptSection.name = "research-context"`
-- Content includes the current branch and the IDEA one-liner
+- Emits JSON with `hookSpecificOutput.hookEventName = "SessionStart"` and a non-empty `hookSpecificOutput.additionalContext` field
+- `additionalContext` includes the current branch and the IDEA one-liner
 - If not on a branch (detached HEAD) or no DASHBOARD, exits silently with no output
 
 **Verify Hook Wiring:**
@@ -208,7 +208,7 @@ cat "${CLAUDE_PLUGIN_ROOT}/hooks/hooks.json"   # SessionStart → hooks/session-
 | Resume | Context restored with hypotheses + tree |
 | Step | E001 created, tree Status updated via verdict mapping, DASHBOARD rewritten |
 | State Persistence | All updates in git, no orphaned files |
-| Hook Detection | New session emits research-context section |
+| Hook Detection | New session emits additionalContext with research info |
 | Cross-Session | Resume works without prior context |
 
 ## Failure Modes to Check
@@ -238,5 +238,5 @@ echo "Cleanup complete. Test environment deleted."
 - [ ] Run `tests/hook-test.sh` and confirm all pass
 - [ ] Run this e2e flow through init → status → resume
 - [ ] Check git history shows clean state transitions
-- [ ] Confirm hook emits research-context in a new session
+- [ ] Confirm hook emits additionalContext with research info in a new session
 - [ ] Validate DASHBOARD accuracy after a step (verdict → status mapping correct)
