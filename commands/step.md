@@ -6,6 +6,45 @@ description: 跑一轮假设验证循环(designer → critic → implementer →
 
 编排 5 个无状态子 agent 完成一轮假设验证循环: 从假设树选取待验假设 → 设计实验 → 预检审查 → 实现代码 → 执行实验 → 分析结果 → 更新假设树和决策记录.
 
+## Journal 文件格式
+
+每次 step 执行时, 主控在 `.research/experiments/Exxx.journal` 追加状态行 (JSONL 格式), 用于断点续跑.
+
+**Schema**:
+```jsonl
+{"step":"init", "hypothesis_id":"H1.1", "experiment_id":"E001", "status":"started", "timestamp":"2026-06-20T10:00:00Z"}
+{"step":"designer", "round":1, "status":"done", "timestamp":"2026-06-20T10:05:00Z"}
+{"step":"critic", "round":1, "status":"done", "verdict":"FAIL", "timestamp":"2026-06-20T10:10:00Z"}
+{"step":"designer", "round":2, "status":"done", "timestamp":"2026-06-20T10:15:00Z"}
+{"step":"critic", "round":2, "status":"done", "verdict":"PASS", "timestamp":"2026-06-20T10:20:00Z"}
+{"step":"implementer", "status":"done", "timestamp":"2026-06-20T10:30:00Z"}
+{"step":"runner", "command_index":0, "status":"done", "timestamp":"2026-06-20T11:00:00Z"}
+{"step":"runner", "command_index":1, "status":"done", "timestamp":"2026-06-20T11:30:00Z"}
+{"step":"analyst-primary", "status":"done", "verdict":"supported", "timestamp":"2026-06-20T11:35:00Z"}
+{"step":"analyst-adversary", "status":"done", "verdict":"supported", "timestamp":"2026-06-20T11:40:00Z"}
+{"step":"finalize", "status":"done", "timestamp":"2026-06-20T11:45:00Z"}
+```
+
+或异常终止:
+```jsonl
+{"step":"terminate", "reason":"critic_round2_fail", "timestamp":"2026-06-20T10:25:00Z"}
+{"step":"terminate", "reason":"runner_error", "error":"Not in slurm job", "timestamp":"2026-06-20T11:00:00Z"}
+```
+
+**字段说明**:
+- `step`: 当前步骤名称 (init/designer/critic/implementer/runner/analyst-primary/analyst-adversary/finalize/terminate)
+- `status`: done(成功) / fail(失败) / started(开始)
+- `round`: designer/critic 的轮次 (1 或 2)
+- `command_index`: runner 执行的命令索引 (0, 1, 2, ...)
+- `verdict`: critic/analyst 的判决结果
+- `error`: 错误信息(仅 fail/terminate 时填写)
+- `reason`: 终止原因(仅 terminate 时填写)
+- `timestamp`: ISO 8601 格式时间戳
+
+**续跑规则**:
+- 若最后一行是 `{"step":"finalize", "status":"done"}` 或 `{"step":"terminate"}`, 则实验已完成
+- 否则视为未完成, 可从最后一个 `status=done` 的步骤后续跑
+
 ## 前置条件
 
 - 当前目录是 git 仓库
@@ -14,6 +53,44 @@ description: 跑一轮假设验证循环(designer → critic → implementer →
 - 当前在 slurm 管理节点或已在计算节点上
 
 ## 执行流程
+
+### Step 0: Resume 检测(断点续跑)
+
+在开始新实验前, 先检查是否存在未完成的实验:
+
+1. **读取假设树并选择待验假设**:
+   - 读取 `.research/tree.md`, 解析所有假设节点
+   - 识别 `Status: 待验` 的假设, 按层级优先和序号优先排序
+   - 选择第一个待验假设作为目标
+   - 若无待验假设, 输出提示并终止(见 Step 1)
+
+2. **扫描未完成 journal**:
+   - 列出 `.research/experiments/` 目录下所有 `*.journal` 文件
+   - 逐个读取, 解析每行 JSON
+   - 检查 `step=init` 行的 `hypothesis_id` 是否匹配当前待验假设
+   - 检查最后一行:
+     - 若为 `{"step":"finalize", "status":"done"}` → 已完成, 跳过
+     - 若为 `{"step":"terminate"}` → 已终止, 跳过
+     - 否则 → 未完成, 可续跑
+
+3. **构建续跑状态**:
+   - 若找到未完成 journal, 解析所有 `status=done` 的步骤, 构建已完成步骤集合
+   - 确定续跑点(首个未完成步骤):
+     - 若 `{"step":"designer", "round":1}` 未完成 → 从 Step 2 开始
+     - 若 `{"step":"critic", "round":1}` 未完成 → 从 Step 2.5 Round 1 开始
+     - 若 `{"step":"implementer"}` 未完成 → 从 Step 4 开始
+     - 若 `{"step":"runner", "command_index":i}` 部分完成 → 从 Step 5 的第 i+1 条命令开始
+     - 若 `{"step":"analyst-primary"}` 未完成 → 从 Step 7.1 开始
+   - 输出提示: `检测到未完成实验 {experiment_id}, 从 {step} 续跑`
+   - 跳转到对应步骤继续执行
+
+4. **创建新实验**:
+   - 若无未完成 journal, 生成新实验编号(E001, E002, ...)
+   - 创建 `.research/experiments/Exxx.journal`, 写入 init 行:
+     ```json
+     {"step":"init", "hypothesis_id":"H1.1", "experiment_id":"E001", "status":"started", "timestamp":"2026-06-20T10:00:00Z"}
+     ```
+   - 继续执行 Step 2(designer round 1)
 
 ### Step 1: 读取假设树并选择待验假设
 
@@ -84,6 +161,26 @@ Codebase 约束: {codebase_constraints}  # 可用指标 / baseline ckpt / 算力
 - 返回必须是结构化 JSON, 字段与 `agents/designer.md` 一致
 - 若 designer 返回格式错误, 重试 1 次, 仍失败则终止并记录错误
 
+**Journal 写入**:
+```python
+# 检查 journal 中是否已有该步骤
+if not journal_has_step_done('designer', round=1):
+    # 执行 designer round 1
+    designer_result = Agent(...)
+    
+    # 追加 journal 行
+    append_to_journal({
+        "step": "designer",
+        "round": 1,
+        "status": "done",
+        "timestamp": current_iso8601_time()
+    })
+else:
+    # 从 Exxx.md 或 journal 加载已有结果
+    designer_result = load_designer_output_from_experiment_doc(experiment_id, round=1)
+    print("跳过 designer round 1 (已完成)")
+```
+
 ### Step 2.5: Critic 预检审查
 
 在 designer 返回设计后, 调用 `critic` agent 进行 4 维度预检审查. Critic 预检是多轮流程, 最多 2 轮:
@@ -142,6 +239,31 @@ Designer 设计: {designer_json}    # designer 返回的完整 JSON
 - 若最终判决为 **PASS** 或 **WARN**: 进入 Step 3(创建实验文档), 继续流程
 - 若最终判决为 **FAIL**: 进入 Round 2(设计迭代)
 
+**Journal 写入**:
+```python
+# 检查 journal 中是否已有该步骤
+if not journal_has_step_done('critic', round=1):
+    # 执行 critic round 1
+    critic_result = Agent(...)
+    
+    # 统计 verdict 并聚合
+    final_verdict = aggregate_critic_verdict(critic_result)
+    
+    # 追加 journal 行
+    append_to_journal({
+        "step": "critic",
+        "round": 1,
+        "status": "done",
+        "verdict": final_verdict,  # PASS / WARN / FAIL
+        "timestamp": current_iso8601_time()
+    })
+else:
+    # 从 Exxx.md 或 journal 加载已有结果
+    critic_result = load_critic_output_from_experiment_doc(experiment_id, round=1)
+    final_verdict = load_critic_verdict_from_journal(experiment_id, round=1)
+    print(f"跳过 critic round 1 (已完成, verdict={final_verdict})")
+```
+
 #### Round 2: 设计迭代(当 Round 1 FAIL)
 
 当 Round 1 最终判决为 FAIL 时:
@@ -177,6 +299,39 @@ Critic 反馈(Round 1):
 
 2. **再次调用 critic**: 用相同流程审查 Round 2 设计, 使用 Round 2 的 designer JSON
 
+**Journal 写入(Round 2 designer)**:
+```python
+if not journal_has_step_done('designer', round=2):
+    designer_round2_result = Agent(...)
+    append_to_journal({
+        "step": "designer",
+        "round": 2,
+        "status": "done",
+        "timestamp": current_iso8601_time()
+    })
+else:
+    designer_round2_result = load_designer_output_from_experiment_doc(experiment_id, round=2)
+    print("跳过 designer round 2 (已完成)")
+```
+
+**Journal 写入(Round 2 critic)**:
+```python
+if not journal_has_step_done('critic', round=2):
+    critic_round2_result = Agent(...)
+    final_verdict_round2 = aggregate_critic_verdict(critic_round2_result)
+    append_to_journal({
+        "step": "critic",
+        "round": 2,
+        "status": "done",
+        "verdict": final_verdict_round2,
+        "timestamp": current_iso8601_time()
+    })
+else:
+    critic_round2_result = load_critic_output_from_experiment_doc(experiment_id, round=2)
+    final_verdict_round2 = load_critic_verdict_from_journal(experiment_id, round=2)
+    print(f"跳过 critic round 2 (已完成, verdict={final_verdict_round2})")
+```
+
 3. **Round 2 判决聚合**: 同 Round 1, 统计 4 维度 verdict 并聚合
 
 **Round 2 后处理**:
@@ -191,6 +346,15 @@ Critic 反馈(Round 1):
 3. **终止本轮 step**, 不调用 implementer/runner/analyst
 4. 输出摘要, 建议人工检查假设或设计
 
+**Journal 写入(终止)**:
+```python
+append_to_journal({
+    "step": "terminate",
+    "reason": "critic_round2_fail",
+    "timestamp": current_iso8601_time()
+})
+```
+
 #### Override 机制
 
 若实验文档 `.research/experiments/Exxx.md` 中存在 `## Override` 章节(人工事后添加), 则:
@@ -204,13 +368,14 @@ Critic 反馈(Round 1):
 
 解析 designer 返回的 JSON, 生成实验编号(E001, E002, ...), 写入 `.research/experiments/Exxx.md`.
 
-**文档结构**:
+**完整文档模板结构**:
 
 ```markdown
 # Exxx: [假设 ID + 动作 slug]
 
-**Hypothesis**: [hypothesis_id] [hypothesis_text]
-**Status**: 待执行
+**Hypothesis ID**: [hypothesis_id]
+**Hypothesis**: [hypothesis_text]
+**Status**: 待执行 | 已执行 | 执行失败 | Critic 拒绝 | 被支持 | 被推翻 | 进行中
 **Created**: [今天日期 YYYY-MM-DD]
 
 ## Design (Round 1)
@@ -247,11 +412,26 @@ Critic 反馈(Round 1):
 
 [同 Round 1 格式, 使用 designer Round 2 的 JSON]
 
+**实验变量**:
+- [variables[].name]: control=[control] / treatment=[treatment]
+
+**评估指标**:
+- [metrics[].name]: 期望方向 [expected_direction], 阈值 [threshold]
+
+**判别标准**: [judge_criteria]
+
+**执行命令**:
+- [baseline] [cmd]  (gpu=[N], hours=[H])
+- [treatment] [cmd]  (gpu=[N], hours=[H])
+
 ## Critic Review (Round 2)
 
-[同 Round 1 格式, 使用 critic Round 2 的反馈]
+**Final Verdict**: [PASS / WARN / FAIL]
 
-[若 Round 2 仍 FAIL, 追加以下章节]
+**Dimensions**:
+[同 Round 1 格式, 4 个维度的独立判决]
+
+[若 Round 2 仍 FAIL, 追加以下章节并终止]
 
 ## Critic Final Verdict
 
@@ -268,30 +448,97 @@ Critic 反馈(Round 1):
 2. 评估 codebase 约束是否过于严格
 3. 考虑调整假设范围或拆分为更小粒度子假设
 
-[若无 Round 2 FAIL, 继续正常流程]
+[若人工判定可继续, 追加 Override 章节]
+
+## Override
+
+**Acknowledged**: [日期 YYYY-MM-DD]
+**Reason**: [人工判定 critic 误判的理由]
+
+用户确认 critic 审查过于严格或误判, 强制继续执行实验.
+
+[若无 Round 2 FAIL 或已 Override, 继续正常流程]
+
+## 实现摘要
+
+**Modified Files**:
+[implementer 返回的 diff_summary]
+
+**Self-check**: [pass/fail]
+
+**Notes**:
+[implementer 的 notes]
 
 ## 执行记录
 
-[待 runner 回填]
+### Baseline
+- **命令**: [cmd]
+- **状态**: [success/fail/timeout]
+- **产出**: [artifact_path]
+- **指标**: [metrics as key-value pairs]
+[若失败, 追加 **错误**: [error]]
+
+### Treatment
+- **命令**: [cmd]
+- **状态**: [success/fail/timeout]
+- **产出**: [artifact_path]
+- **指标**: [metrics as key-value pairs]
+[若失败, 追加 **错误**: [error]]
+
+[若任一命令失败, 追加]:
+**终止原因**: [error message]
 
 ## 结果
 
-[待 Step 7 回填, 格式取决于是否启用对抗验证]
+[情况 A: 对抗验证未配置]
 
-[若对抗验证未配置]:
-**Analyst (Claude)**: {verdict} (confidence {confidence})
-{reasoning}
-(对抗审校未配置)
+**Analyst (Claude)**: {primary.verdict} (confidence {primary.confidence})
 
-[若对抗验证启用]:
-**Primary Analyst (Claude)**: {primary.verdict} (confidence {primary.confidence})
 {primary.reasoning}
 
-**Adversarial Analyst ({model} via MCP)**: {adversary.verdict} (confidence {adversary.confidence})
+(对抗审校未配置)
+
+[情况 B: 对抗验证启用, verdict 一致]
+
+**Primary Analyst (Claude)**: {primary.verdict} (confidence {primary.confidence})
+
+{primary.reasoning}
+
+**Adversarial Analyst ({adversary_model} via MCP)**: {adversary.verdict} (confidence {adversary.confidence})
+
 {adversary.adversarial_reasoning}
 
-**Final Verdict**: {final_verdict} (confidence {confidence})
-{一致性说明}
+**Final Verdict**: {final_verdict} (confidence {primary.confidence})
+
+两位分析师判定一致, 结论稳固.
+
+[情况 C: 对抗验证启用, verdict 分歧且 adversary.confidence >= 0.7]
+
+**Primary Analyst (Claude)**: {primary.verdict} (confidence {primary.confidence})
+
+{primary.reasoning}
+
+**Adversarial Analyst ({adversary_model} via MCP)**: {adversary.verdict} (confidence {adversary.confidence})
+
+{adversary.adversarial_reasoning}
+
+**Final Verdict**: uncertain (降级)
+
+分析师判定存在分歧(primary: {primary.verdict}, adversary: {adversary.verdict}), 且 adversary 信心度 >= 0.7, 结论降级为 uncertain. 建议人工复核或增加样本量.
+
+[情况 D: 对抗验证启用, verdict 分歧但 adversary.confidence < 0.7]
+
+**Primary Analyst (Claude)**: {primary.verdict} (confidence {primary.confidence})
+
+{primary.reasoning}
+
+**Adversarial Analyst ({adversary_model} via MCP)**: {adversary.verdict} (confidence {adversary.confidence})
+
+{adversary.adversarial_reasoning}
+
+**Final Verdict**: {primary.verdict} (confidence {primary.confidence})
+
+Adversary 持不同意见(adversary: {adversary.verdict})但信心度 < 0.7, 采用 primary 判定. 存在一定不确定性.
 ```
 
 **章节生成规则**:
@@ -340,6 +587,31 @@ implementer_result = Agent(
 - 不引入新依赖, diff 最小化
 - 若 implementer 返回格式错误, 重试 1 次, 仍失败则终止
 
+**Journal 写入**:
+```python
+if not journal_has_step_done('implementer'):
+    implementer_result = Agent(...)
+    
+    if implementer_result['self_check'] == 'fail':
+        append_to_journal({
+            "step": "terminate",
+            "reason": "implementer_self_check_fail",
+            "error": implementer_result['notes'],
+            "timestamp": current_iso8601_time()
+        })
+        # 终止流程
+        return
+    
+    append_to_journal({
+        "step": "implementer",
+        "status": "done",
+        "timestamp": current_iso8601_time()
+    })
+else:
+    implementer_result = load_implementer_output_from_experiment_doc(experiment_id)
+    print("跳过 implementer (已完成)")
+```
+
 ### Step 5: 调用 runner agent 执行实验
 
 对 designer 返回的每条 command(baseline/treatment), 调用 `runner` agent. 契约见 `agents/runner.md`:
@@ -380,6 +652,45 @@ runner_result = Agent(
 - **增量写盘**: 每条命令完成立即写 `experiment_log.jsonl`, 避免长时间运行后丢失记录
 - **失败终止**: 任一 command 返回 `status != success` 立即停止, 不继续执行后续命令
 
+**Journal 写入(逐命令)**:
+```python
+commands = designer_result['commands']  # baseline, treatment, ...
+for i, cmd_spec in enumerate(commands):
+    if journal_has_step_done('runner', command_index=i):
+        print(f"跳过 runner command {i} (已完成)")
+        continue
+    
+    runner_result = Agent(
+        subagent_type='runner',
+        prompt=f"""执行命令 {i}: {cmd_spec['cmd']}""",
+        ...
+    )
+    
+    if runner_result['status'] != 'success':
+        append_to_journal({
+            "step": "runner",
+            "command_index": i,
+            "status": "fail",
+            "error": runner_result['error'],
+            "timestamp": current_iso8601_time()
+        })
+        append_to_journal({
+            "step": "terminate",
+            "reason": "runner_error",
+            "error": runner_result['error'],
+            "timestamp": current_iso8601_time()
+        })
+        # 终止流程, 不执行后续命令
+        return
+    
+    append_to_journal({
+        "step": "runner",
+        "command_index": i,
+        "status": "done",
+        "timestamp": current_iso8601_time()
+    })
+```
+
 ### Step 6: 回填实验文档的执行记录
 
 解析 runner 返回的 JSON, 更新 `.research/experiments/Exxx.md` 的 "执行记录" 章节:
@@ -418,35 +729,46 @@ runner_result = Agent(
 调用 `analyst` agent, 传递实验结果和假设. 契约见 `agents/analyst.md`:
 
 ```python
-primary_result = Agent(
-    prompt=f"""
-你是结果分析师. 解读实验结果, 判定假设是否成立.
+if not journal_has_step_done('analyst-primary'):
+    primary_result = Agent(
+        prompt=f"""
+    你是结果分析师. 解读实验结果, 判定假设是否成立.
 
-假设 {hypothesis_id}: {hypothesis_text}
-成功判据: {judge_criteria}        # 来自 designer_result
-实验结果: [
-    {{"group": "baseline", "metrics": {{...}}}},
-    {{"group": "treatment", "metrics": {{...}}}}
-]                                  # 来自各 runner_result
+    假设 {hypothesis_id}: {hypothesis_text}
+    成功判据: {judge_criteria}        # 来自 designer_result
+    实验结果: [
+        {{"group": "baseline", "metrics": {{...}}}},
+        {{"group": "treatment", "metrics": {{...}}}}
+    ]                                  # 来自各 runner_result
 
-要求:
-1. 对比 baseline 和 treatment 指标, reasoning 必须引用具体数值
-2. 判定 verdict; uncertain 必须说明原因(数据不足/判据模糊/结果矛盾)
-3. confidence < 0.7 或假设被强力反驳/发现新假设时, trigger_replan=true
-4. 返回结构化 JSON:
-   {{
-       "verdict": "supported|refuted|uncertain",
-       "confidence": 0.0-1.0,
-       "trigger_replan": true|false,
-       "reasoning": "判定依据, 2-3 句话, 引用具体数值"
-   }}
+    要求:
+    1. 对比 baseline 和 treatment 指标, reasoning 必须引用具体数值
+    2. 判定 verdict; uncertain 必须说明原因(数据不足/判据模糊/结果矛盾)
+    3. confidence < 0.7 或假设被强力反驳/发现新假设时, trigger_replan=true
+    4. 返回结构化 JSON:
+       {{
+           "verdict": "supported|refuted|uncertain",
+           "confidence": 0.0-1.0,
+           "trigger_replan": true|false,
+           "reasoning": "判定依据, 2-3 句话, 引用具体数值"
+       }}
 
-返回 JSON 即可, 无需其他输出.
-""",
-    subagent_type="analyst",
-    isolation="worktree",
-    description="分析实验结果"
-)
+    返回 JSON 即可, 无需其他输出.
+    """,
+        subagent_type="analyst",
+        isolation="worktree",
+        description="分析实验结果"
+    )
+    
+    append_to_journal({
+        "step": "analyst-primary",
+        "status": "done",
+        "verdict": primary_result['verdict'],
+        "timestamp": current_iso8601_time()
+    })
+else:
+    primary_result = load_analyst_output_from_experiment_doc(experiment_id, analyst_type='primary')
+    print("跳过 analyst-primary (已完成)")
 ```
 
 #### 7.2 Adversarial Verification (对抗验证)
@@ -467,30 +789,41 @@ primary_result = Agent(
 
 3. **调用 adversary analyst**:
    ```python
-   adversary_result = Agent(
-       prompt=f"""
-   你是跨模型对抗审查员. 从原始实验数据独立推导结论, 不得参考 primary analyst 的判定.
+   if not journal_has_step_done('analyst-adversary'):
+       adversary_result = Agent(
+           prompt=f"""
+       你是跨模型对抗审查员. 从原始实验数据独立推导结论, 不得参考 primary analyst 的判定.
 
-   实验文档(已截断, 无 primary 结论):
-   {truncated_experiment_content}
+       实验文档(已截断, 无 primary 结论):
+       {truncated_experiment_content}
 
-   要求:
-   1. 从原始 metrics 和执行记录推导判定, 不得参考他人结论
-   2. reasoning 必须引用具体数值
-   3. 若数据不足/矛盾, 返回 verdict="uncertain"
-   4. 返回结构化 JSON:
-      {{
-          "verdict": "supported|refuted|uncertain",
-          "confidence": 0.0-1.0,
-          "adversarial_reasoning": "独立判定依据, 2-3 句话"
-      }}
+       要求:
+       1. 从原始 metrics 和执行记录推导判定, 不得参考他人结论
+       2. reasoning 必须引用具体数值
+       3. 若数据不足/矛盾, 返回 verdict="uncertain"
+       4. 返回结构化 JSON:
+          {{
+              "verdict": "supported|refuted|uncertain",
+              "confidence": 0.0-1.0,
+              "adversarial_reasoning": "独立判定依据, 2-3 句话"
+          }}
 
-   返回 JSON 即可, 无需其他输出.
-   """,
-       subagent_type="analyst-adversary",
-       isolation="worktree",
-       description="对抗验证实验结果"
-   )
+       返回 JSON 即可, 无需其他输出.
+       """,
+           subagent_type="analyst-adversary",
+           isolation="worktree",
+           description="对抗验证实验结果"
+       )
+       
+       append_to_journal({
+           "step": "analyst-adversary",
+           "status": "done",
+           "verdict": adversary_result['verdict'],
+           "timestamp": current_iso8601_time()
+       })
+   else:
+       adversary_result = load_analyst_output_from_experiment_doc(experiment_id, analyst_type='adversary')
+       print("跳过 analyst-adversary (已完成)")
    ```
 
 4. **Verdict 合并逻辑**:
@@ -634,6 +967,15 @@ trigger_replan: [primary.trigger_replan]
 若 `final_verdict=uncertain`, 不创建决策记录, 仅在实验文档结果章节记录, 假设保持 `进行中`.
 
 若 `.research/decisions/` 目录不存在, 先创建.
+
+**Journal 写入(完成)**:
+```python
+append_to_journal({
+    "step": "finalize",
+    "status": "done",
+    "timestamp": current_iso8601_time()
+})
+```
 
 ### Step 9: 重写 DASHBOARD.md
 
