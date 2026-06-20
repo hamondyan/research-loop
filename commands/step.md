@@ -1,10 +1,10 @@
 ---
-description: 跑一轮假设验证循环(designer → implementer → runner → analyst → 更新状态)
+description: 跑一轮假设验证循环(designer → critic → implementer → runner → analyst → 更新状态)
 ---
 
 # /research-loop:step
 
-编排 5 个无状态子 agent 完成一轮假设验证循环: 从假设树选取待验假设 → 设计实验 → 实现代码 → 执行实验 → 分析结果 → 更新假设树和决策记录.
+编排 5 个无状态子 agent 完成一轮假设验证循环: 从假设树选取待验假设 → 设计实验 → 预检审查 → 实现代码 → 执行实验 → 分析结果 → 更新假设树和决策记录.
 
 ## 前置条件
 
@@ -84,9 +84,127 @@ Codebase 约束: {codebase_constraints}  # 可用指标 / baseline ckpt / 算力
 - 返回必须是结构化 JSON, 字段与 `agents/designer.md` 一致
 - 若 designer 返回格式错误, 重试 1 次, 仍失败则终止并记录错误
 
+### Step 2.5: Critic 预检审查
+
+在 designer 返回设计后, 调用 `critic` agent 进行 4 维度预检审查. Critic 预检是多轮流程, 最多 2 轮:
+
+#### Round 1: 首次审查
+
+调用 `critic` agent, 传递假设、IDEA 摘要、codebase 约束和 designer 的完整 JSON. 契约见 `agents/critic.md`:
+
+```python
+critic_result = Agent(
+    prompt=f"""
+你是实验设计审查专家. 对 designer 输出进行 4 维度预检.
+
+假设 {hypothesis_id}: {hypothesis_text}
+研究动机: {research_idea}        # 从 .research/IDEA.md 读取, 限 300 字
+Codebase 约束: {codebase_constraints}
+Designer 设计: {designer_json}    # designer 返回的完整 JSON
+
+要求:
+1. 从 4 个维度独立审查:
+   - **Discriminative Power**: 实验能否明确区分假设成立/不成立
+   - **Feasibility**: 资源/时间预算是否合理, commands 是否可执行
+   - **Alignment**: 实验设计是否对齐假设原意, 无偏移或过度简化
+   - **Clarity**: judge_criteria 是否可操作, 避免模糊表述
+2. 每个维度返回机器判决: PASS / WARN / FAIL
+3. FAIL 必须给出具体修正方向, WARN 给出改进建议
+4. 返回结构化 JSON:
+   {{
+       "dimensions": [
+           {{
+               "name": "Discriminative Power",
+               "verdict": "PASS|WARN|FAIL",
+               "reasoning": "判定依据, 2-3 句话",
+               "suggestions": "修正方向或改进建议, FAIL 必填, WARN 选填"
+           }},
+           // ... 其他 3 个维度
+       ]
+   }}
+
+返回 JSON 即可, 无需其他输出.
+""",
+    subagent_type="critic",
+    isolation="worktree",
+    description="预检实验设计"
+)
+```
+
+**判决聚合机制**(机器 verdict):
+- 统计 4 个维度的 verdict: `fail_count`, `warn_count`, `pass_count`
+- 聚合规则:
+  - `fail_count > 0` → 最终判决 **FAIL**
+  - `fail_count == 0 且 warn_count > 0` → 最终判决 **WARN**
+  - `fail_count == 0 且 warn_count == 0` → 最终判决 **PASS**
+
+**Round 1 后处理**:
+- 若最终判决为 **PASS** 或 **WARN**: 进入 Step 3(创建实验文档), 继续流程
+- 若最终判决为 **FAIL**: 进入 Round 2(设计迭代)
+
+#### Round 2: 设计迭代(当 Round 1 FAIL)
+
+当 Round 1 最终判决为 FAIL 时:
+
+1. **重新 brief designer**: 构造 Round 2 brief, 包含 Round 1 的 critic 反馈:
+
+```python
+designer_round2_result = Agent(
+    prompt=f"""
+你是实验设计专家. Round 1 设计未通过 critic 预检, 请根据反馈重新设计.
+
+假设: {hypothesis_id} {hypothesis_text}
+研究动机: {research_idea}
+Codebase 约束: {codebase_constraints}
+
+Round 1 设计: {round1_designer_json}
+
+Critic 反馈(Round 1):
+{critic_round1_feedback}   # 只包含 verdict=FAIL 的维度及其 suggestions
+
+要求:
+1. 针对 FAIL 维度的 suggestions, 调整实验设计
+2. 变量数量 ≤ 3, judge_criteria 可操作, commands 可执行
+3. 返回与 Round 1 相同格式的 JSON
+
+返回 JSON 即可, 无需其他输出.
+""",
+    subagent_type="designer",
+    isolation="worktree",
+    description="重新设计实验(Round 2)"
+)
+```
+
+2. **再次调用 critic**: 用相同流程审查 Round 2 设计, 使用 Round 2 的 designer JSON
+
+3. **Round 2 判决聚合**: 同 Round 1, 统计 4 维度 verdict 并聚合
+
+**Round 2 后处理**:
+- 若最终判决为 **PASS** 或 **WARN**: 进入 Step 3(创建实验文档), 继续流程
+- 若最终判决为 **FAIL**: 进入 Round 2 FAIL 终止流程(见下节)
+
+#### Round 2 FAIL 终止
+
+当 Round 2 最终判决仍为 FAIL 时:
+1. 在 `.research/experiments/Exxx.md` 写入 `## Critic Final Verdict` 章节(格式见 Step 3)
+2. 更新实验文档 `Status: Critic 拒绝`
+3. **终止本轮 step**, 不调用 implementer/runner/analyst
+4. 输出摘要, 建议人工检查假设或设计
+
+#### Override 机制
+
+若实验文档 `.research/experiments/Exxx.md` 中存在 `## Override` 章节(人工事后添加), 则:
+- **跳过整个 Step 2.5**(不调用 critic)
+- **直接进入 Step 3**, 使用 Round 2 的 designer 设计(若无 Round 2 则用 Round 1)
+- Override 只能在 Round 2 FAIL 终止后使用, 不影响 Round 1 FAIL(Round 1 FAIL 必须先进 Round 2)
+
+**检测 Override 的时机**: 在 Step 2 designer 返回后, Step 2.5 开始前, 检查实验文档是否已存在且包含 `## Override` 章节. 若存在, 跳过 Step 2.5.
+
 ### Step 3: 创建实验文档 experiments/Exxx.md
 
-解析 designer 返回的 JSON, 生成实验编号(E001, E002, ...), 写入 `.research/experiments/Exxx.md`:
+解析 designer 返回的 JSON, 生成实验编号(E001, E002, ...), 写入 `.research/experiments/Exxx.md`.
+
+**文档结构**:
 
 ```markdown
 # Exxx: [假设 ID + 动作 slug]
@@ -95,22 +213,62 @@ Codebase 约束: {codebase_constraints}  # 可用指标 / baseline ckpt / 算力
 **Status**: 待执行
 **Created**: [今天日期 YYYY-MM-DD]
 
-## 实验变量
+## Design (Round 1)
 
+**实验变量**:
 - [variables[].name]: control=[control] / treatment=[treatment]
 
-## 评估指标
-
+**评估指标**:
 - [metrics[].name]: 期望方向 [expected_direction], 阈值 [threshold]
 
-## 判别标准
+**判别标准**: [judge_criteria]
 
-[judge_criteria]
-
-## 执行命令
-
+**执行命令**:
 - [baseline] [cmd]  (gpu=[N], hours=[H])
 - [treatment] [cmd]  (gpu=[N], hours=[H])
+
+## Critic Review (Round 1)
+
+**Final Verdict**: [PASS / WARN / FAIL]
+
+**Dimensions**:
+- **Discriminative Power**: [verdict] — [reasoning]
+  [若有 suggestions: "→ 修正方向: [suggestions]"]
+- **Feasibility**: [verdict] — [reasoning]
+  [若有 suggestions: "→ 修正方向: [suggestions]"]
+- **Alignment**: [verdict] — [reasoning]
+  [若有 suggestions: "→ 修正方向: [suggestions]"]
+- **Clarity**: [verdict] — [reasoning]
+  [若有 suggestions: "→ 修正方向: [suggestions]"]
+
+[若进入 Round 2, 追加以下章节]
+
+## Design (Round 2)
+
+[同 Round 1 格式, 使用 designer Round 2 的 JSON]
+
+## Critic Review (Round 2)
+
+[同 Round 1 格式, 使用 critic Round 2 的反馈]
+
+[若 Round 2 仍 FAIL, 追加以下章节]
+
+## Critic Final Verdict
+
+**Status**: Critic 拒绝
+**Date**: [今天日期 YYYY-MM-DD]
+
+经过 2 轮审查, 实验设计仍未通过预检. 终止本轮实验.
+
+**Round 2 FAIL 维度**:
+[列出 verdict=FAIL 的维度及其 reasoning 和 suggestions]
+
+**建议**:
+1. 人工检查假设表述是否准确
+2. 评估 codebase 约束是否过于严格
+3. 考虑调整假设范围或拆分为更小粒度子假设
+
+[若无 Round 2 FAIL, 继续正常流程]
 
 ## 执行记录
 
@@ -120,6 +278,13 @@ Codebase 约束: {codebase_constraints}  # 可用指标 / baseline ckpt / 算力
 
 [待 analyst 回填]
 ```
+
+**章节生成规则**:
+1. `## Design (Round 1)` 和 `## Critic Review (Round 1)` 总是生成
+2. 若 Round 1 FAIL 进入 Round 2, 追加 `## Design (Round 2)` 和 `## Critic Review (Round 2)`
+3. 若 Round 2 FAIL, 追加 `## Critic Final Verdict`, 设置 `Status: Critic 拒绝`, 不生成后续 "执行记录" 和 "结果" 章节
+4. 若 Round 1 PASS/WARN 或 Round 2 PASS/WARN, 生成 "执行记录" 和 "结果" 章节(待 runner 和 analyst 回填)
+5. 若检测到 Override, 跳过 Critic Review 章节, 直接生成 Design + 执行记录 + 结果
 
 若 `.research/experiments/` 目录不存在, 先创建.
 
@@ -389,14 +554,20 @@ Updated:     .research/DASHBOARD.md
 
 3. **结构化返回强制**: 所有子 agent 必须返回 JSON, 字段与对应 `agents/*.md` 契约一致; 若格式错误重试 1 次, 仍失败则终止
 
-4. **verdict → status 映射**: 英文 verdict 只在 analyst JSON 输出中出现; 持久化到 tree.md 的是中文 status(被支持/被推翻/进行中), 由主控 PI 按 Step 8 映射表翻译
+4. **Critic 判决聚合**: critic 返回 4 个维度的独立 verdict, 主控 PI 按聚合规则计算最终判决(任一 FAIL → 最终 FAIL; 无 FAIL 但有 WARN → 最终 WARN; 全 PASS → 最终 PASS); 最终判决决定流程走向(PASS/WARN 继续, FAIL 进入 Round 2 或终止)
 
-5. **增量写盘**: runner 每完成一条 command 立即更新 `experiment_log.jsonl`, 避免长时间运行后数据丢失
+5. **Critic 多轮迭代**: Round 1 FAIL 必须进入 Round 2, Round 2 FAIL 终止流程并写入 `## Critic Final Verdict`; 每轮都在 Exxx.md 追加对应的 Design 和 Critic Review 章节, 保留所有历史记录
 
-6. **Slurm 环境约束**: runner 必须检查 `$SLURM_JOB_ID`, 在管理节点上禁止直接执行训练任务
+6. **Override 检测**: 在 Step 2.5 开始前, 检查实验文档是否已存在且包含 `## Override` 章节; 若存在则跳过 Step 2.5, 直接进入 Step 3; Override 只能在 Round 2 FAIL 后人工添加
 
-7. **失败记录**: 任一步骤失败, 在对应文档(experiments/Exxx.md)中记录错误, 并终止流程, 严禁静默容错或降级
+7. **verdict → status 映射**: 英文 verdict 只在 analyst JSON 输出中出现; 持久化到 tree.md 的是中文 status(被支持/被推翻/进行中), 由主控 PI 按 Step 8 映射表翻译
 
-8. **日期格式**: 统一使用 ISO 8601 格式 `YYYY-MM-DD`
+8. **增量写盘**: runner 每完成一条 command 立即更新 `experiment_log.jsonl`, 避免长时间运行后数据丢失
 
-9. **编号自增**: experiments 和 decisions 编号从 001 开始, 自动递增(读取现有文件数量 +1)
+9. **Slurm 环境约束**: runner 必须检查 `$SLURM_JOB_ID`, 在管理节点上禁止直接执行训练任务
+
+10. **失败记录**: 任一步骤失败, 在对应文档(experiments/Exxx.md)中记录错误, 并终止流程, 严禁静默容错或降级
+
+11. **日期格式**: 统一使用 ISO 8601 格式 `YYYY-MM-DD`
+
+12. **编号自增**: experiments 和 decisions 编号从 001 开始, 自动递增(读取现有文件数量 +1)
