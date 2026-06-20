@@ -79,6 +79,54 @@ cp -r research-loop ~/.claude/plugins/
 | runner | 在 slurm 计算节点执行命令, 返回指标和产出 |
 | analyst | 解读结果, 判定 supported/refuted/uncertain |
 
+## 对抗审校 (v0.3)
+
+### Critic Agent: 实验设计预检
+
+在 designer 生成实验设计后, critic agent 进行 4 维度审查:
+- **可判别性**: 实验能区分假设成立/不成立吗?
+- **变量数**: 变量 ≤ 3 吗? 交互效应可解释吗?
+- **judge_criteria**: 是否含具体阈值和统计检验?
+- **commands**: 路径完整、资源预算合理吗?
+
+若 Round 1 FAIL, designer 收到反馈重设计 (Round 2). 两轮后仍 FAIL 则终止, 用户可添加 `## Override` 段落强制继续.
+
+### Adversary Analyst: 跨模型验证
+
+primary analyst (Claude) 判定结果后, adversary analyst (通过 MCP llm-chat 调用 DeepSeek/GPT 等) 独立验证.
+
+**Reviewer Independence**: adversary 只读截断版 experiments/Exxx.md (不含 primary 的 reasoning), 避免被引导.
+
+**Verdict 合并**:
+- 一致 → 采信 primary
+- 分歧 + adversary 高置信度 (≥0.7) → 降级为 uncertain
+- 分歧 + adversary 低置信度 → 采信 primary, 附警告
+
+### 安装 MCP llm-adversary
+
+见 `mcp-servers/llm-chat/README.md`.
+
+## 断点续跑 (v0.3)
+
+### Journal 状态机
+
+每次 step 执行时, 主控在 `.research/experiments/Exxx.journal` (JSONL 格式) 记录各步骤完成状态:
+- designer round 1/2 done
+- critic round 1/2 done
+- implementer done
+- runner command 0/1/2 done/fail
+- analyst-primary/adversary done
+- finalize done / terminate
+
+### Resume 逻辑
+
+下次 `/research-loop:step` 时:
+1. 检测当前待验假设是否有未完成 journal
+2. 若有, 从首个 non-done 步骤续跑 (跳过已完成的 designer/implementer/runner[0-N])
+3. 若无, 正常创建新实验
+
+**场景示例**: runner 第 2 条命令超时 → 用户修复 slurm 配置 → 再次 step → 跳过 designer/critic/implementer/runner[0-1], 从 runner[2] 续跑.
+
 ## 状态词汇
 
 - 假设状态(tree.md / DASHBOARD): `待验` / `进行中` / `被支持` / `被推翻`
