@@ -67,6 +67,13 @@ artifacts/       # gitignore, 大文件; 状态文件只记路径+关键指标
 - **分支约束**: `init` 检测到非实验分支会建议建新分支, 但**严禁擅自创建**, 必须用户明确同意并提供分支名。
 - **日期**: 统一 ISO 8601 `YYYY-MM-DD`。
 
+## Critic 与 Adversary 的约束
+
+- **Critic 职责边界**: 只审 4 维度(可判别性/变量数/judge_criteria/commands), 不审假设本身、不审代码实现、不审结果对错。
+- **Critic verdict 机器化聚合**: 主控按 4 维度结果聚合最终 verdict(任一 FAIL → 最终 FAIL), **不信任 critic 自己写的 top-level verdict 字段**。
+- **Adversary reviewer-independence 铁律**: 永不将 primary analyst 的 reasoning/verdict 传给 adversary。调用 adversary 前主控必须截断 Exxx.md 到 `## 结果` 之前。
+- **Adversary 默认开启**: 对抗审校不 opt-in, 永远并发执行。若 MCP 不可用, 跳过 adversary + 警告, 不阻断流程。
+
 ## 设计依据
 
 `docs/specs/2026-06-16-research-loop-design.md`(设计决策表、agent 职责表)和 `docs/plans/2026-06-16-research-loop-plugin.md`(实现规划)是权威背景。改架构前先读 spec 第 2 节的决策理由。
