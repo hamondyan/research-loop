@@ -276,7 +276,22 @@ Critic 反馈(Round 1):
 
 ## 结果
 
-[待 analyst 回填]
+[待 Step 7 回填, 格式取决于是否启用对抗验证]
+
+[若对抗验证未配置]:
+**Analyst (Claude)**: {verdict} (confidence {confidence})
+{reasoning}
+(对抗审校未配置)
+
+[若对抗验证启用]:
+**Primary Analyst (Claude)**: {primary.verdict} (confidence {primary.confidence})
+{primary.reasoning}
+
+**Adversarial Analyst ({model} via MCP)**: {adversary.verdict} (confidence {adversary.confidence})
+{adversary.adversarial_reasoning}
+
+**Final Verdict**: {final_verdict} (confidence {confidence})
+{一致性说明}
 ```
 
 **章节生成规则**:
@@ -396,12 +411,14 @@ runner_result = Agent(
 
 更新实验文档的 `Status` 字段为 `已执行` 或 `执行失败`.
 
-### Step 7: 调用 analyst agent 分析结果
+### Step 7: 调用 analyst agent 分析结果并进行对抗验证
+
+#### 7.1 Primary Analyst 分析
 
 调用 `analyst` agent, 传递实验结果和假设. 契约见 `agents/analyst.md`:
 
 ```python
-analyst_result = Agent(
+primary_result = Agent(
     prompt=f"""
 你是结果分析师. 解读实验结果, 判定假设是否成立.
 
@@ -432,20 +449,145 @@ analyst_result = Agent(
 )
 ```
 
+#### 7.2 Adversarial Verification (对抗验证)
+
+在 primary analyst 返回后, 进行跨模型对抗验证以提升结论稳健性.
+
+**步骤**:
+
+1. **检查 MCP llm-adversary 可用性**:
+   - 检查 MCP server `llm-adversary` 是否已注册(查询可用的 MCP tools 中是否包含 `mcp__llm_adversary__chat`)
+   - 若不可用: 跳过对抗验证, 直接使用 primary analyst 的结果, 在 Exxx.md 的 ## 结果 章节注明 `(对抗审校未配置)`
+   - 若可用: 继续步骤 2
+
+2. **准备截断版实验文档**:
+   - 读取 `.research/experiments/Exxx.md`
+   - 查找 `\n## 结果\n` 位置, 截取该位置之前的全部内容(保留 ## 假设, ## Design, ## 执行记录等, 移除 ## 结果)
+   - 截断后的文档应包含 hypothesis, judge_criteria, commands, metrics 等原始数据, 但不包含 primary analyst 的 reasoning/verdict
+
+3. **调用 adversary analyst**:
+   ```python
+   adversary_result = Agent(
+       prompt=f"""
+   你是跨模型对抗审查员. 从原始实验数据独立推导结论, 不得参考 primary analyst 的判定.
+
+   实验文档(已截断, 无 primary 结论):
+   {truncated_experiment_content}
+
+   要求:
+   1. 从原始 metrics 和执行记录推导判定, 不得参考他人结论
+   2. reasoning 必须引用具体数值
+   3. 若数据不足/矛盾, 返回 verdict="uncertain"
+   4. 返回结构化 JSON:
+      {{
+          "verdict": "supported|refuted|uncertain",
+          "confidence": 0.0-1.0,
+          "adversarial_reasoning": "独立判定依据, 2-3 句话"
+      }}
+
+   返回 JSON 即可, 无需其他输出.
+   """,
+       subagent_type="analyst-adversary",
+       isolation="worktree",
+       description="对抗验证实验结果"
+   )
+   ```
+
+4. **Verdict 合并逻辑**:
+   - 若 `primary.verdict == adversary.verdict`: 结论一致, 采用 primary verdict, 在结果中注明 "两位分析师一致"
+   - 若 `primary.verdict != adversary.verdict 且 adversary.confidence >= 0.7`: 存在有力分歧, 最终 verdict 降级为 `uncertain`, 在结果中说明 "分析师判定分歧, 降级为 uncertain"
+   - 若 `primary.verdict != adversary.verdict 且 adversary.confidence < 0.7`: 分歧但 adversary 信心不足, 采用 primary verdict, 在结果中注明 "adversary 持不同意见但信心不足, 采用 primary 判定"
+
+5. **更新实验文档 ## 结果 章节**(见 Step 7.3 详细格式)
+
+#### 7.3 写入 ## 结果 到 Exxx.md
+
+根据是否启用对抗验证, 使用不同格式:
+
+**情况 A: 对抗验证未配置**
+
+```markdown
+## 结果
+
+**Analyst (Claude)**: {primary.verdict} (confidence {primary.confidence})
+
+{primary.reasoning}
+
+(对抗审校未配置)
+```
+
+**情况 B: 对抗验证启用, verdict 一致**
+
+```markdown
+## 结果
+
+**Primary Analyst (Claude)**: {primary.verdict} (confidence {primary.confidence})
+
+{primary.reasoning}
+
+**Adversarial Analyst ({adversary_model} via MCP)**: {adversary.verdict} (confidence {adversary.confidence})
+
+{adversary.adversarial_reasoning}
+
+**Final Verdict**: {final_verdict} (confidence {primary.confidence})
+
+两位分析师判定一致, 结论稳固.
+```
+
+**情况 C: 对抗验证启用, verdict 分歧且 adversary.confidence >= 0.7**
+
+```markdown
+## 结果
+
+**Primary Analyst (Claude)**: {primary.verdict} (confidence {primary.confidence})
+
+{primary.reasoning}
+
+**Adversarial Analyst ({adversary_model} via MCP)**: {adversary.verdict} (confidence {adversary.confidence})
+
+{adversary.adversarial_reasoning}
+
+**Final Verdict**: uncertain (降级)
+
+分析师判定存在分歧(primary: {primary.verdict}, adversary: {adversary.verdict}), 且 adversary 信心度 >= 0.7, 结论降级为 uncertain. 建议人工复核或增加样本量.
+```
+
+**情况 D: 对抗验证启用, verdict 分歧但 adversary.confidence < 0.7**
+
+```markdown
+## 结果
+
+**Primary Analyst (Claude)**: {primary.verdict} (confidence {primary.confidence})
+
+{primary.reasoning}
+
+**Adversarial Analyst ({adversary_model} via MCP)**: {adversary.verdict} (confidence {adversary.confidence})
+
+{adversary.adversarial_reasoning}
+
+**Final Verdict**: {primary.verdict} (confidence {primary.confidence})
+
+Adversary 持不同意见(adversary: {adversary.verdict})但信心度 < 0.7, 采用 primary 判定. 存在一定不确定性.
+```
+
 **关键约束**:
-- analyst 只分析已有数据, 不运行新实验
+- primary analyst 只分析已有数据, 不运行新实验
 - `verdict` 字段必须是 `supported` / `refuted` / `uncertain` 之一(英文, 只在 analyst JSON 输出中出现)
-- 若数据不足无法判定, 返回 `verdict: "uncertain"` 并说明原因
+- 若数据不足无法判定, primary 返回 `verdict: "uncertain"` 并说明原因
+- adversary 必须从截断版文档独立推导, 严禁看到 primary 的 reasoning/verdict
+- final verdict 用于后续 tree.md 状态更新和决策记录创建
 
 ### Step 8: 更新假设树和创建决策记录
 
 主控 PI 将 analyst 的英文 verdict 翻译为中文 tree status, 映射规则:
 
-| analyst verdict | tree.md Status |
+| final_verdict (来自 Step 7) | tree.md Status |
 |---|---|
 | supported | 被支持 |
 | refuted | 被推翻 |
 | uncertain | 进行中(保持, 不结案) |
+
+**注意**: 使用 Step 7 产出的 `final_verdict` (经对抗验证合并后的结果), 而非直接使用 `primary.verdict`.
 
 **8.1 更新 `.research/tree.md`**(用精确 Edit, 不整文件重写, Status 不加粗):
 
@@ -459,7 +601,7 @@ Parent: H1
 - 找到对应假设节点, 把 `Status:` 行从 `待验`/`进行中` 改为映射后的值
 - 把实验 ID 追加到 `Evidence:` 行(Evidence 只增不删; 原为 `(empty)` 则替换为该 ID)
 
-**8.2 创建决策记录 `.research/decisions/Dxxx.md`**(仅在 verdict=supported/refuted, 即假设状态变更时):
+**8.2 创建决策记录 `.research/decisions/Dxxx.md`**(仅在 final_verdict=supported/refuted, 即假设状态变更时):
 
 ```markdown
 # Dxxx: [hypothesis_id] [被支持/被推翻]
@@ -467,11 +609,16 @@ Parent: H1
 **Hypothesis**: [hypothesis_id] [hypothesis_text]
 **Date**: [今天日期 YYYY-MM-DD]
 **Experiment**: [Exxx]
-**Verdict**: [supported/refuted] (confidence [confidence])
+**Verdict**: [final_verdict] (confidence [primary.confidence])
+**Adversarial Verification**: [是/否, 若是则注明一致性状态]
 
 ## 结论
 
-[reasoning]
+[primary.reasoning]
+
+[若启用对抗验证, 追加]:
+**Adversarial Review**: [一致/分歧但采用 primary/等]
+[adversary.adversarial_reasoning]
 
 ## 数据对比
 
@@ -480,11 +627,11 @@ Parent: H1
 
 ## 重规划
 
-trigger_replan: [true/false]
+trigger_replan: [primary.trigger_replan]
 [若 true, 说明受影响的兄弟/父假设和派生的新子假设]
 ```
 
-若 `verdict=uncertain`, 不创建决策记录, 仅在实验文档结果章节记录, 假设保持 `进行中`.
+若 `final_verdict=uncertain`, 不创建决策记录, 仅在实验文档结果章节记录, 假设保持 `进行中`.
 
 若 `.research/decisions/` 目录不存在, 先创建.
 
@@ -560,14 +707,18 @@ Updated:     .research/DASHBOARD.md
 
 6. **Override 检测**: 在 Step 2.5 开始前, 检查实验文档是否已存在且包含 `## Override` 章节; 若存在则跳过 Step 2.5, 直接进入 Step 3; Override 只能在 Round 2 FAIL 后人工添加
 
-7. **verdict → status 映射**: 英文 verdict 只在 analyst JSON 输出中出现; 持久化到 tree.md 的是中文 status(被支持/被推翻/进行中), 由主控 PI 按 Step 8 映射表翻译
+7. **verdict → status 映射**: 英文 verdict 只在 analyst JSON 输出中出现; 持久化到 tree.md 的是中文 status(被支持/被推翻/进行中), 由主控 PI 按 Step 8 映射表翻译; 使用 Step 7 合并后的 `final_verdict`, 而非直接使用 `primary.verdict`
 
-8. **增量写盘**: runner 每完成一条 command 立即更新 `experiment_log.jsonl`, 避免长时间运行后数据丢失
+8. **对抗验证流程**: Step 7 先调用 primary analyst, 然后检查 MCP llm-adversary 可用性; 若不可用跳过并标注, 若可用则截断 Exxx.md(移除 ## 结果), 调用 adversary analyst, 按合并规则产出 final_verdict; 截断必须确保 adversary 看不到 primary 的 reasoning/verdict, 保持 reviewer-independence
 
-9. **Slurm 环境约束**: runner 必须检查 `$SLURM_JOB_ID`, 在管理节点上禁止直接执行训练任务
+9. **Verdict 合并规则**: (1) primary == adversary → 采用 primary, 注明一致; (2) primary != adversary 且 adversary.confidence >= 0.7 → final = uncertain, 注明分歧降级; (3) primary != adversary 且 adversary.confidence < 0.7 → 采用 primary, 注明 adversary 质疑但信心不足
 
-10. **失败记录**: 任一步骤失败, 在对应文档(experiments/Exxx.md)中记录错误, 并终止流程, 严禁静默容错或降级
+10. **增量写盘**: runner 每完成一条 command 立即更新 `experiment_log.jsonl`, 避免长时间运行后数据丢失
 
-11. **日期格式**: 统一使用 ISO 8601 格式 `YYYY-MM-DD`
+11. **Slurm 环境约束**: runner 必须检查 `$SLURM_JOB_ID`, 在管理节点上禁止直接执行训练任务
 
-12. **编号自增**: experiments 和 decisions 编号从 001 开始, 自动递增(读取现有文件数量 +1)
+12. **失败记录**: 任一步骤失败, 在对应文档(experiments/Exxx.md)中记录错误, 并终止流程, 严禁静默容错或降级
+
+13. **日期格式**: 统一使用 ISO 8601 格式 `YYYY-MM-DD`
+
+14. **编号自增**: experiments 和 decisions 编号从 001 开始, 自动递增(读取现有文件数量 +1)
