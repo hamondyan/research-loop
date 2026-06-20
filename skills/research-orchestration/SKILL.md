@@ -95,6 +95,31 @@ Codebase 约束: {paths}
 }
 ```
 
+**Critic brief:**
+```
+你是实验设计评审员. 实验设计: {design_json}
+假设 {hypothesis_id}: {hypothesis_content}
+评估此设计能否有效判别假设. 返回 JSON:
+{
+  "approved": true | false,
+  "concerns": [...],
+  "suggestions": [...]
+}
+```
+
+**Adversary Analyst brief:**
+```
+你是对抗性分析师. 实验结果: {metrics_json}
+假设 {hypothesis_id}: {hypothesis_content}
+实验设计(截断): {truncated_Exxx_md}
+挑战分析结论, 寻找推翻证据的替代解释. 返回 JSON:
+{
+  "alternative_explanations": [...],
+  "attack_confidence": 0.0-1.0,
+  "recommendation": "accept" | "reject" | "rerun"
+}
+```
+
 ## Verdict → Tree Status 映射
 
 三套词汇通过单向映射连接, 避免混用:
