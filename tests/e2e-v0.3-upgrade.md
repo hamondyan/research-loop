@@ -8,7 +8,7 @@
 1. `/research-loop:init toy_idea.md` 创建假设 H1
 2. `/research-loop:step`
 3. 预期: designer(round 1) → critic FAIL → designer(round 2) → critic PASS → 继续
-4. 检查: experiments/E001.md 有两个 "## Design (Round N)" 段落(段落名以 step.md 模板为准, 英文 Design)
+4. 检查: experiments/E001.md 有两个 "## 实验设计 (Round N)" 段落
 5. 检查: E001.journal 有 designer(round 1), critic(round 1, FAIL), designer(round 2), critic(round 2, PASS)
 
 ## Test 2: Critic Round 2 FAIL + Override

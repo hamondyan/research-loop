@@ -378,7 +378,7 @@ append_to_journal({
 **Status**: 待执行 | 已执行 | 执行失败 | Critic 拒绝 | 被支持 | 被推翻 | 进行中
 **Created**: [今天日期 YYYY-MM-DD]
 
-## Design (Round 1)
+## 实验设计 (Round 1)
 
 **实验变量**:
 - [variables[].name]: control=[control] / treatment=[treatment]
@@ -408,7 +408,7 @@ append_to_journal({
 
 [若进入 Round 2, 追加以下章节]
 
-## Design (Round 2)
+## 实验设计 (Round 2)
 
 [同 Round 1 格式, 使用 designer Round 2 的 JSON]
 
@@ -542,8 +542,8 @@ Adversary 持不同意见(adversary: {adversary.verdict})但信心度 < 0.7, 采
 ```
 
 **章节生成规则**:
-1. `## Design (Round 1)` 和 `## Critic Review (Round 1)` 总是生成
-2. 若 Round 1 FAIL 进入 Round 2, 追加 `## Design (Round 2)` 和 `## Critic Review (Round 2)`
+1. `## 实验设计 (Round 1)` 和 `## Critic Review (Round 1)` 总是生成
+2. 若 Round 1 FAIL 进入 Round 2, 追加 `## 实验设计 (Round 2)` 和 `## Critic Review (Round 2)`
 3. 若 Round 2 FAIL, 追加 `## Critic Final Verdict`, 设置 `Status: Critic 拒绝`, 不生成后续 "执行记录" 和 "结果" 章节
 4. 若 Round 1 PASS/WARN 或 Round 2 PASS/WARN, 生成 "执行记录" 和 "结果" 章节(待 runner 和 analyst 回填)
 5. 若检测到 Override, 跳过 Critic Review 章节, 直接生成 Design + 执行记录 + 结果
