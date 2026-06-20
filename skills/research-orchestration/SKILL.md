@@ -95,30 +95,45 @@ Codebase 约束: {paths}
 }
 ```
 
-**Critic brief:**
+**Critic brief:**(契约见 `agents/critic.md`, 字段必须一致)
 ```
-你是实验设计评审员. 实验设计: {design_json}
+你是实验设计的对抗性审查员. 实验设计(Round {N}): {design_json}
 假设 {hypothesis_id}: {hypothesis_content}
-评估此设计能否有效判别假设. 返回 JSON:
-{
-  "approved": true | false,
-  "concerns": [...],
-  "suggestions": [...]
-}
-```
+研究动机: {idea_summary}   # IDEA.md 前 300 字
+Codebase 约束: {constraints}
+{若 round=2, 追加 Round 1 critic.reasoning, 要求检查是否真正回应质疑}
 
-**Adversary Analyst brief:**
-```
-你是对抗性分析师. 实验结果: {metrics_json}
-假设 {hypothesis_id}: {hypothesis_content}
-实验设计(截断): {truncated_Exxx_md}
-挑战分析结论, 寻找推翻证据的替代解释. 返回 JSON:
+按 4 维度审查并返回 JSON:
 {
-  "alternative_explanations": [...],
-  "attack_confidence": 0.0-1.0,
-  "recommendation": "accept" | "reject" | "rerun"
+  "verdict": "PASS" | "WARN" | "FAIL",
+  "dimensions": {
+    "discriminability": {"verdict": "PASS|WARN|FAIL", "reason": "..."},
+    "variable_count":   {"verdict": "PASS|WARN|FAIL", "reason": "..."},
+    "judge_criteria":   {"verdict": "PASS|WARN|FAIL", "reason": "..."},
+    "commands":         {"verdict": "PASS|WARN|FAIL", "reason": "..."}
+  },
+  "reasoning": "整体评判 2-3 句, 引用具体字段值",
+  "suggested_revisions": ["修订建议 1", "修订建议 2"]
 }
 ```
+主控不信任 top-level verdict, 按 4 维度机器聚合(任一 FAIL → FAIL).
+
+**Adversary Analyst brief:**(契约见 `agents/analyst-adversary.md`, 通过 MCP llm-adversary 调用)
+```
+你是对抗性结果验证员, 通过外部 API 独立审查. 不参考其他审查者意见.
+假设 {hypothesis_id}: {hypothesis_content}
+判别标准: {judge_criteria}
+实验记录(截断版, 去掉 ## 结果 章节, 不含 primary 的 reasoning):
+{truncated_Exxx_md}
+
+独立判定假设是否被支持, reasoning 引用具体数值, 返回 JSON:
+{
+  "verdict": "supported" | "refuted" | "uncertain",
+  "confidence": 0.0-1.0,
+  "adversarial_reasoning": "独立判定依据, 2-3 句, 引用数值"
+}
+```
+主控合并: 一致→采信 primary; 分歧且 adversary confidence≥0.7→降级 uncertain; 分歧且低置信→采信 primary 附警告.
 
 ## Verdict → Tree Status 映射
 
