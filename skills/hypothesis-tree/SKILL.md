@@ -1,6 +1,6 @@
 ---
 name: hypothesis-tree
-description: 假设树读写规范 — .research/tree.md 的格式、读取和按需写入方式
+description: Use when the user asks to record hypotheses, create experiment records, update research results, or maintain .research tree/dashboard state
 ---
 
 # Hypothesis Tree

@@ -1,0 +1,33 @@
+{
+  "name": "research-loop",
+  "version": "1.0.0",
+  "description": "研究记忆辅助系统: 假设树、实验记录、研究上下文恢复",
+  "author": {
+    "name": "chenglongyan"
+  },
+  "license": "MIT",
+  "keywords": [
+    "research",
+    "hypothesis-tree",
+    "memory-system",
+    "context-loader"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Research Loop",
+    "shortDescription": "Track hypotheses, experiments, and research context",
+    "longDescription": "Structured research memory for hypothesis trees, experiment records, and context resume workflows.",
+    "developerName": "chenglongyan",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Initialize a research loop from this idea file.",
+      "Resume my current research context.",
+      "Record this experiment result."
+    ]
+  }
+}
