@@ -1,7 +1,7 @@
 {
   "name": "research-loop",
-  "description": "科研 idea 全生命周期管理: 假设树状态 + 多 agent 协作 + 跨 session 衔接",
-  "version": "0.1.0",
+  "description": "研究记忆辅助系统 — 结构化记录假设/实验, 按需写入, 上下文加载",
+  "version": "1.0.0",
   "author": {
     "name": "chenglongyan"
   },
@@ -9,7 +9,7 @@
   "keywords": [
     "research",
     "hypothesis-tree",
-    "multi-agent",
-    "workflow"
+    "memory-system",
+    "context-loader"
   ]
 }

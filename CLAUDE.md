@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 这是什么
 
-`research-loop` 是一个 **Claude Code 插件**, 为科研 idea 提供全生命周期管理: 假设树状态持久化 + 多 agent 协作 + 跨 session 衔接。没有语言运行时, 所有产物都是 markdown(命令/agent/skill 定义)和一个 bash hook。"代码"即 prompt 契约。
+`research-loop` 是一个 **Claude Code 插件**, 为研究提供记忆辅助: 假设树状态持久化 + 格式化记录 + 上下文加载 + 跨 session 衔接。没有语言运行时, 所有产物都是 markdown(命令/skill 定义)和一个 bash hook。"代码"即 prompt 契约。
 
 ## 测试
 
@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 bash tests/hook-test.sh          # SessionStart hook 单元测试(5 个用例, 唯一可自动执行的测试)
 ```
 
-`tests/e2e-test.md` 是**手动**端到端测试剧本(init → status → resume → step), 其中 step 需要真实 codebase 和 slurm 计算节点, 无法自动跑。
+`tests/e2e-test.md` 是**手动**端到端测试剧本(init → 对话记录 → resume → status), 需要真实对话交互, 无法自动跑。
 
 本地验证 hook 输出:
 
@@ -22,58 +22,119 @@ CLAUDE_PLUGIN_ROOT=$(pwd) ./hooks/session-start   # 在带 .research/DASHBOARD.m
 
 无 build / lint 步骤。改完 prompt 文件无需编译。
 
-## 架构: 主控 PI + 无状态子 agent
+## 架构: 三命令 + 三原子写入函数 + 格式规范
 
 核心模型是**中央状态唯一真相源**。理解这一点需要串读三类文件:
 
-- **主控 PI**(主会话): 唯一读写 `.research/` 的角色。方法论在 `skills/research-orchestration/SKILL.md`。它不跑长任务, 只构造**最小 brief** 派发给子 agent, 解析返回的 JSON 后**增量落盘**。
-- **5 个无状态子 agent**(`agents/*.md`): scout(按需调研) / designer(设计实验) / implementer(写代码) / runner(slurm 上执行) / analyst(判定结果)。每个 agent 文件定义其 Input/Output JSON 契约。子 agent 不继承主会话上下文, 用 `isolation="worktree"` 隔离。
-- **命令**(`commands/*.md`): `step` 是唯一编排子 agent 的命令(完整 9 步流水线); `init`/`resume`/`status` 只读写 `.research/` 文件, 不调子 agent。
+- **命令**(`commands/*.md`): 
+  - `init` — 初始化 `.research/` 骨架(IDEA/tree/DASHBOARD + experiments/ 空目录)
+  - `resume` — 读取并注入上下文(IDEA + tree + experiments 摘要, 中等详细度 ~1000-2000 字)
+  - `status` — 纯读打印 DASHBOARD + 统计
+  
+  命令只读写 `.research/` 文件, 不调子 agent, 不做自动编排。
 
-`step` 流水线(见 `commands/step.md`): 选待验假设 → designer → 写 `experiments/Exxx.md` → implementer → runner(逐条命令) → 回填指标 → analyst → 翻译 verdict 更新 tree → 写 `decisions/Dxxx.md` → 重写 DASHBOARD。
+- **Skill**(`skills/hypothesis-tree/SKILL.md`): 
+  - 规定 tree.md / experiments/Exxx.md / DASHBOARD.md 格式(Status 词汇/编号规则/append-only)
+  - 定义对话中的写入触发机制(用户明确指示才写, 三种形式)
+  - 定义三个原子写入操作:
+    - `appendHypothesis(tree.md, 描述, 父节点)` — 追加假设
+    - `createExperimentRecord(Exxx.md, 描述, 关联假设)` — 创建实验记录
+    - `updateExperimentResult(Exxx.md, 结果, 结论)` — 更新结果并联动 tree
+  - 定义 `updateDashboard()` 自动维护一致性
+  
+  这些函数不暴露为命令, 只在对话中 agent 按需调用。
 
-子 agent 的 brief 模板在 `step.md` 内联(权威版本)和 `SKILL.md` 内各有一份, 改契约时**两处都要同步**, 还要对齐对应的 `agents/*.md`。
+- **SessionStart Hook**(`hooks/session-start`): 进入仓库时自动探测 `.research/DASHBOARD.md`, 有则提示"活跃研究存在, 用 /research-loop:resume 加载上下文"。
+
+没有子 agent / workflows / 执行后端 — v1.0 砍掉了所有自动化编排, 只保留记忆系统骨架。
 
 ## 状态目录 `.research/`(运行时产物, 不在本仓库)
 
 ```
-IDEA.md          # 北极星: 动机/核心假设/成功判据, 稳定极少改
-tree.md          # 假设树, 单一真相源(只有主控 PI 读写)
-DASHBOARD.md     # 紧凑仪表盘, SessionStart hook 的探测入口
-experiments/Exxx.md   # append-only 编号文件, 永不删改
-decisions/Dxxx.md     # 仅假设状态变更(supported/refuted)时创建
-artifacts/       # gitignore, 大文件; 状态文件只记路径+关键指标
+IDEA.md          # 北极星: 动机 + 核心问题, 稳定极少改
+tree.md          # 假设树: 层级 + Status + Evidence 指针, 单一真相源
+DASHBOARD.md     # 仪表盘: Active 假设清单 + 下一步建议(hook 探测入口)
+experiments/     # 实验详细记录, 一次实验一个 Exxx.md
+  E001.md
+  E002.md
 ```
 
-`.research/` 是插件**作用于用户仓库**时生成的, 不存在于本插件仓库内。它随研究分支 git 提交, 让代码与实验记录一次锁定、可回溯。
+v1.0 不再使用 `decisions/` 和 `artifacts/` 子目录。
 
-## 关键不变量(最容易写错的地方)
+### 假设树格式 (tree.md)
 
-- **三套词汇单向映射, 严禁混用**:
-  - analyst JSON 里的英文 verdict: `supported` / `refuted` / `uncertain`
-  - 持久化到 `tree.md` 的中文 status: `待验` / `进行中` / `被支持` / `被推翻`
-  - 映射: supported→被支持, refuted→被推翻, uncertain→进行中(保持不结案)
-  - 严禁把英文 verdict 写进 tree.md, 严禁出现 `已验证`/`已否决` 等旧词汇。
-- **`tree.md` 格式**: `Status:` 行**不加粗**(写 `Status: 被支持`, 不是 `**Status**`)。用精确 Edit 改单行, 不整文件重写。
-- **append-only**: Evidence 字段只增不删; 假设 ID 一旦分配永不重用(即使被推翻); experiments/decisions 编号文件永不删改。
-- **DASHBOARD canonical 格式**: 只有 `**IDEA**` 和 `**Active**` 两个字段行(`**Last**` 在 Active 行内), 无独立 Status 行。被支持/被推翻的假设不进 Active Hypotheses 清单。格式细节见 `commands/step.md` Step 9。
-- **hook 静默原则**: `hooks/session-start` 在非 git 仓库 / 无 DASHBOARD / detached HEAD / 字段不完整时**静默退出无输出**, 否则输出 `hookSpecificOutput.{hookEventName, additionalContext}` JSON。改 hook 后必跑 `hook-test.sh`。
+```markdown
+# Hypothesis Tree
 
-## 工程纪律(来自设计文档, 贯穿所有 prompt)
+## H1: [假设描述]
+Status: 待验
+Evidence: (empty)
 
-- **Fail fast, 严禁静默容错**: 子 agent 返回 `status=fail` 或 JSON 格式错误 → 重试 1 次 → 仍失败则记录错误并**终止本轮**, 不降级、不兜底。
-- **决策价值导向**: 重规划基于假设树状态, 内置中止判据(边际增益 <0.5% / 连续无提升 / 资源失衡)。不为填满 ablation 而穷举。
-- **slurm 约束**: runner 必须先检查 `$SLURM_JOB_ID`, 不在计算节点则返回 `status=fail`, **禁止在管理节点直接跑训练**。
-- **分支约束**: `init` 检测到非实验分支会建议建新分支, 但**严禁擅自创建**, 必须用户明确同意并提供分支名。
-- **日期**: 统一 ISO 8601 `YYYY-MM-DD`。
+### H1.1: [子假设]
+Status: 进行中
+Evidence: E001
 
-## Critic 与 Adversary 的约束
+## H2: [假设描述]
+Status: 被支持
+Evidence: E003, E005
+```
 
-- **Critic 职责边界**: 只审 4 维度(可判别性/变量数/judge_criteria/commands), 不审假设本身、不审代码实现、不审结果对错。
-- **Critic verdict 机器化聚合**: 主控按 4 维度结果聚合最终 verdict(任一 FAIL → 最终 FAIL), **不信任 critic 自己写的 top-level verdict 字段**。
-- **Adversary reviewer-independence 铁律**: 永不将 primary analyst 的 reasoning/verdict 传给 adversary。调用 adversary 前主控必须截断 Exxx.md 到 `## 结果` 之前。
-- **Adversary 默认开启**: 对抗审校不 opt-in, 永远并发执行。若 MCP 不可用, 跳过 adversary + 警告, 不阻断流程。
+**Status 词汇**(中文 4 选 1): `待验` / `进行中` / `被支持` / `被推翻`
+
+**编号规则**: H1 / H1.1 / H1.1.1 最多三层, 永不重用
+
+### 实验记录格式 (experiments/Exxx.md)
+
+```markdown
+# Exxx: [假设 ID] - [简短动作描述]
+
+**Hypothesis**: [假设 ID] [假设文本]
+**Date**: [YYYY-MM-DD]
+**Status**: 待验 | 进行中 | 已完成
+
+## 实验设计
+**目标**: [要验证什么]
+**方法**: [怎么做]
+**预期**: [期望结果]
+
+## 执行记录
+[用户手动做实验的关键步骤/命令/观察]
+
+## 结果
+**数据**: [metrics / 观察]
+**结论**: [支持/推翻/不确定 + 理由]
+
+## 影响
+[对假设树的影响]
+```
+
+### DASHBOARD 格式
+
+```markdown
+# Research Dashboard
+
+**IDEA**: [IDEA 一句话]
+**Active**: [待验+进行中数量] hypotheses | **Last**: [YYYY-MM-DD]
+
+## Active Hypotheses
+- H1: [描述] (待验)
+- H1.1: [描述] (进行中)
+
+## Next Steps
+1. [下一步建议]
+```
+
+## 关键不变量
+
+- **append-only**: Evidence 字段只增不删; 假设 ID 一旦分配永不重用(即使被推翻); experiments 编号文件永不删改。
+- **Status 词汇一致**: 4 个中文词汇, 不混用英文。
+- **Status 不加粗**: `Status: 待验`, 不写 `**Status: 待验**`。
+- **唯一写盘点**: 只有主 PI(对话中)写 `.research/`, 格式化逻辑保证一致性。三个原子写入函数实现在 SKILL 或可选的 `scripts/helpers/*.sh`。
 
 ## 设计依据
 
-`docs/specs/2026-06-16-research-loop-design.md`(设计决策表、agent 职责表)和 `docs/plans/2026-06-16-research-loop-plugin.md`(实现规划)是权威背景。改架构前先读 spec 第 2 节的决策理由。
+`docs/specs/2026-06-16-research-loop-design.md`(v0.1 设计决策表、agent 职责表)、`docs/plans/2026-06-16-research-loop-plugin.md`(实现规划)、`docs/specs/2026-06-20-research-memory-system-design.md`(v1.0 架构转型 — 从自动循环到记忆辅助系统)、`docs/plans/2026-06-20-research-memory-system.md`(v1.0 实现计划)是权威背景。改架构前先读对应 spec 的决策理由。
+
+## superpowers 开发期约定(不进交付物)
+
+superpowers 的 brainstorming/writing-plans/executing-plans skill 只在开发期辅助设计和实现规划, 不作为运行时依赖打包。交付物(`commands/`/`skills/`/`hooks/`)不引用 superpowers skill, 确保终端用户无需安装 superpowers 即可使用本插件。
