@@ -18,8 +18,6 @@
 cp -r research-loop ~/.claude/plugins/
 ```
 
-重启 Claude Code 或重新加载配置。SessionStart hook 会在进入仓库时自动探测 `.research/DASHBOARD.md` 并注入研究上下文。
-
 ## 使用
 
 ### 初始化研究项目
@@ -77,34 +75,16 @@ Agent: ✓ E001 结果已记录, H1→被支持 (Evidence: E001)
     └── E002.md
 ```
 
-v1.0 不再使用 `decisions/` 和 `artifacts/` 子目录(与 experiments 重复/产物放外面)。
-
-## 子 Agent
-
-| Agent | 职责 |
-|---|---|
-| scout | 调研文献和代码库, 定位相关实现位置(按需调用) |
-| designer | 针对假设设计判别实验, 返回变量/指标/判据/命令 |
-| implementer | 按设计实现代码改动并自检 |
-| runner | 在 slurm 计算节点执行命令, 返回指标和产出 |
-| analyst | 解读结果, 判定 supported/refuted/uncertain |
-
-## 对抗审校 (v0.3)
-
 ## 关键不变量
 
 - **append-only**: 假设/实验 ID 一旦分配永不重用(即使被推翻), Evidence 只增不删
 - **Status 词汇**: `待验` / `进行中` / `被支持` / `被推翻` (中文 4 选 1, 不混用英文)
 - **Status 不加粗**: 纯文本 `Status: 待验`, 不写 `**Status: 待验**`
-- **唯一写盘点**: 只有主 PI(对话中)写 `.research/`, 格式化逻辑保证一致性
 
 ## 依赖
 
 - Claude Code(支持 plugin / command / skill / SessionStart hook)
 - bash(可选, 如果用辅助脚本实现写入函数)
 
-状态以纯 markdown 持久化; 写入逻辑在 `skills/hypothesis-tree/SKILL.md` 或可选的 `scripts/helpers/*.sh`。
+状态以纯 markdown 持久化; 写入逻辑在 `skills/hypothesis-tree/SKILL.md`。
 
-## License
-
-MIT License - 详见 LICENSE 文件
