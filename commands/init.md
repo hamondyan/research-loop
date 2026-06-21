@@ -1,10 +1,10 @@
 ---
-description: 从 idea 文件初始化 .research/ 目录
+description: 初始化 .research/ 目录骨架
 ---
 
 # /research-loop:init <idea文件>
 
-从 idea 文件读取初步想法, 通过对话提炼核心动机/假设/成功判据, 建立初始假设树, 创建 `.research/` 结构.
+从 idea 文件读取初步想法, 通过对话提炼核心动机/假设, 建立初始假设树, 创建 `.research/` 结构. 只在研究开始时调一次。
 
 ## 前置条件
 
@@ -56,8 +56,8 @@ description: 从 idea 文件初始化 .research/ 目录
 ├── IDEA.md         # 研究动机和核心问题
 ├── tree.md         # 假设树(分层结构 + 状态追踪)
 ├── DASHBOARD.md    # 当前进展仪表盘
-└── artifacts/      # 实验产出(日志/图表/模型 checkpoint)
-    └── .gitkeep
+└── experiments/    # 实验详细记录(一次实验一个文件)
+```
 ```
 
 ### 6. 写入 IDEA.md
@@ -152,8 +152,7 @@ Parent: H2
 确保 `artifacts/` 目录被 git 追踪:
 
 ```bash
-mkdir -p .research/artifacts
-touch .research/artifacts/.gitkeep
+mkdir -p .research/experiments
 ```
 
 ### 10. 提示用户下一步
@@ -162,19 +161,18 @@ touch .research/artifacts/.gitkeep
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✓ Research initialized successfully
+✓ 研究记忆系统已初始化
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Created:
   .research/IDEA.md        - 研究动机和核心问题
   .research/tree.md        - 假设树(X 个假设)
   .research/DASHBOARD.md   - 进展仪表盘
-  .research/artifacts/     - 实验产出目录
+  .research/experiments/   - 实验记录目录
 
-Next Steps:
-  1. 用 /research-loop:status 查看当前状态
-  2. 设计 H1 的验证实验
-  3. 用 /research-loop:step 跑一轮假设验证循环
+下一步:
+  - 用 /research-loop:resume 加载上下文
+  - 或直接开始对话让我帮你记录假设/实验
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
