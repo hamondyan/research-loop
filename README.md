@@ -102,7 +102,6 @@ v1.0 不再使用 `decisions/` 和 `artifacts/` 子目录(与 experiments 重复
 
 - Claude Code(支持 plugin / command / skill / SessionStart hook)
 - bash(可选, 如果用辅助脚本实现写入函数)
-- (可选)MCP llm-chat + 外部 OpenAI 兼容 API, 用于 adversary 跨模型对抗审校(v0.3 遗留, v1.0 未实现)
 
 状态以纯 markdown 持久化; 写入逻辑在 `skills/hypothesis-tree/SKILL.md` 或可选的 `scripts/helpers/*.sh`。
 
